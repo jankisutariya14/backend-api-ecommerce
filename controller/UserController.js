@@ -1,9 +1,8 @@
 const UserModel = require('../model/UserModel');
-const storage = require('node-persist');
 let nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
 
-storage.initSync();
+/* MAIL SETUP */
 
 let transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -13,183 +12,330 @@ let transporter = nodemailer.createTransport({
     }
 });
 
+
+/* REGISTER */
+
 exports.Register = async (req, res) => {
+
     try {
+
         const { email, password } = req.body;
 
         const userExists = await UserModel.findOne({ email });
+
         if (userExists) {
-            return res.status(200).json({
+            return res.json({
                 status: "User already exists"
             });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
+
         req.body.password = hashedPassword;
 
         const data = await UserModel.create(req.body);
 
-        res.status(200).json({
+        res.json({
             status: "User Created Successfully",
             data
         });
+
     } catch (error) {
+
         res.status(500).json({
-            status: "Error in registration",
+            status: "Registration Error",
             error: error.message
         });
+
     }
+
 };
 
-exports.Login = async (req, res) => {
-    const data = await UserModel.find({ email: req.body.email });
-    const UserId = await storage.getItem('UserId');
-    const otp = Math.floor(100000 + Math.random() * 900000);
-    if (data.length !== 1) {
-        return res.status(200).json({
-            status: "User not registered, please register first"
-        });
-    }
-    else if (UserId) {
-        res.status(200).json({
-            status: "User already logged in,please logout first",
-            UserId
 
-        });
-    }
-    else if (await bcrypt.compare(req.body.password, data[0].password) === false) {
-        res.status(200).json({
-            status: "Check your email and password"
-        });
-    }
-    else {
-        await storage.setItem('UserId', { id: data[0].id, otp });
+
+/* LOGIN */
+
+exports.Login = async (req, res) => {
+
+    try {
+
+        // Already logged in check
+        if (req.session.user && req.session.user.isLoggedIn) {
+
+            return res.json({
+                status: "User already logged in, please logout first",
+                UserId: req.session.user.id
+            });
+
+        }
+
+        const user = await UserModel.findOne({ email: req.body.email });
+
+        if (!user) {
+
+            return res.json({
+                status: "User not registered"
+            });
+
+        }
+
+        const match = await bcrypt.compare(req.body.password, user.password);
+
+        if (!match) {
+
+            return res.json({
+                status: "Invalid email or password"
+            });
+
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000);
+
+        // store OTP in session
+        req.session.otpData = {
+            id: user._id,
+            email: user.email,
+            otp: otp
+        };
 
         let mailOptions = {
             from: 'jankisutariya14@gmail.com',
-            to: req.body.email,
-            subject: 'Your Login OTP',
+            to: user.email,
+            subject: 'Login OTP',
             text: 'Your Login OTP is ' + otp
         };
 
-        transporter.sendMail(mailOptions, function (error, info) {
+        transporter.sendMail(mailOptions, function (error) {
+
             if (error) {
-                res.status(200).json({
-                    status: error
+
+                return res.json({
+                    status: "Error sending OTP"
                 });
-            } else {
-                res.status(200).json({
-                    status: "Login Success. OTP sent to your email",
-                    data
-                });
+
             }
+
+            res.json({
+                status: "Login Success. OTP sent to your email"
+            });
+
         });
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "Login error",
+            error: error.message
+        });
+
     }
 
+};
 
-}
+
+
+/* VERIFY OTP */
 
 exports.VerifyOTP = async (req, res) => {
-    const UserData = await storage.getItem('UserId');
 
-    if (!UserData) {
-        res.status(200).json({
-            status: "No user logged in. Please login first."
-        });
-    }
-    else if (parseInt(req.body.otp) === UserData.otp) {
-        res.status(200).json({
-            status: "OTP verified successfully",
-            UserId: UserData.id
-        });
-    }
-    else {
-        res.status(200).json({
+    try {
+
+        if (!req.session.otpData) {
+
+            return res.json({
+                status: "Session expired. Please login again"
+            });
+
+        }
+
+        if (parseInt(req.body.otp) === req.session.otpData.otp) {
+
+            req.session.user = {
+                id: req.session.otpData.id,
+                email: req.session.otpData.email,
+                isLoggedIn: true
+            };
+
+            return res.json({
+                status: "OTP verified successfully",
+                UserId: req.session.user.id
+            });
+
+        }
+
+        res.json({
             status: "Invalid OTP"
         });
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "OTP verification error",
+            error: error.message
+        });
+
     }
-}
+
+};
+
+
+
+/* FORGOT PASSWORD */
 
 exports.ForgetPassword = async (req, res) => {
-    const user = await UserModel.findOne({ email: req.body.email });
-    if (!user) {
-        return res.status(200).json({
-            status: "User not registered, please register first"
-        });
-    }
-    const otp = Math.floor(100000 + Math.random() * 900000);
-    await storage.setItem('ForgetOTP', { email: req.body.email, otp: otp });
-    let mailOptions = {
-        from: 'jankisutariya14@gmail.com',
-        to: user.email,
-        subject: 'Forgot Password OTP',
-        text: 'Your OTP is ' + otp
-    };
 
-    transporter.sendMail(mailOptions, function (error, info) {
-        if (error) {
-            res.status(200).json({
-                status: error
+    try {
+
+        const user = await UserModel.findOne({ email: req.body.email });
+
+        if (!user) {
+
+            return res.json({
+                status: "User not registered"
             });
-        } else {
-            res.status(200).json({
-                status: "OTP sent to your email",
-            });
+
         }
-    });
-}
+
+        const otp = Math.floor(100000 + Math.random() * 900000);
+
+        req.session.forget = {
+            email: user.email,
+            otp: otp
+        };
+
+        let mailOptions = {
+            from: 'jankisutariya14@gmail.com',
+            to: user.email,
+            subject: 'Forgot Password OTP',
+            text: 'Your OTP is ' + otp
+        };
+
+        transporter.sendMail(mailOptions, function (error) {
+
+            if (error) {
+
+                return res.json({
+                    status: "Error sending OTP"
+                });
+
+            }
+
+            res.json({
+                status: "OTP sent to your email"
+            });
+
+        });
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "Error",
+            error: error.message
+        });
+
+    }
+
+};
+
+
+
+/* VERIFY FORGOT OTP */
 
 exports.VerifyForgetOTP = async (req, res) => {
-    const data = await storage.getItem('ForgetOTP');
 
-    if (!data) {
-        res.status(200).json({
-            status: "OTP not generated"
-        });
-    }
-    else if (parseInt(req.body.otp) === data.otp) {
-        await storage.setItem('ForgetOTP', { ...data, verified: true });
-        res.status(200).json({
-            status: "OTP verified successfully"
-        });
-    }
-    else {
-        res.status(200).json({
+    try {
+
+        if (!req.session.forget) {
+
+            return res.json({
+                status: "OTP not generated"
+            });
+
+        }
+
+        if (parseInt(req.body.otp) === req.session.forget.otp) {
+
+            req.session.forget.verified = true;
+
+            return res.json({
+                status: "OTP verified successfully"
+            });
+
+        }
+
+        res.json({
             status: "Invalid OTP"
         });
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "OTP verification error",
+            error: error.message
+        });
+
     }
-}
+
+};
+
+
+
+/* RESET PASSWORD */
 
 exports.Resetpassword = async (req, res) => {
-    const data = await storage.getItem('ForgetOTP');
-    if (!data || !data.verified) {
-        return res.status(200).json({
-            status: "OTP not verified, First verify OTP"
+
+    try {
+
+        if (!req.session.forget || !req.session.forget.verified) {
+
+            return res.json({
+                status: "OTP not verified"
+            });
+
+        }
+
+        if (req.body.password !== req.body.cpassword) {
+
+            return res.json({
+                status: "Password mismatch"
+            });
+
+        }
+
+        const hashedPassword = await bcrypt.hash(req.body.password, 10);
+
+        await UserModel.updateOne(
+            { email: req.session.forget.email },
+            { password: hashedPassword }
+        );
+
+        req.session.forget = null;
+
+        res.json({
+            status: "Password reset successfully"
         });
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "Error",
+            error: error.message
+        });
+
     }
 
-    if (req.body.password !== req.body.cpassword) {
-        return res.status(200).json({
-            status: "Password and confirm password do not match"
-        });
-    }
+};
 
-    const hashedPassword = await bcrypt.hash(req.body.password, 10);
 
-    await UserModel.updateOne(
-        { email: data.email },
-        { password: hashedPassword }
-    );
 
-    await storage.removeItem('ForgetOTP');
-    res.status(200).json({
-        status: "Password reset successfully"
-    });
-}
+/* LOGOUT */
 
-exports.Logout = async (req, res) => {
-    await storage.removeItem('UserId');
-    res.status(200).json({
+exports.Logout = (req, res) => {
+
+    req.session.destroy();
+
+    res.json({
         status: "Logout Success"
-    })
-}
+    });
+
+};

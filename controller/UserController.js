@@ -1,341 +1,226 @@
 const UserModel = require('../model/UserModel');
-let nodemailer = require('nodemailer');
+const nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = "mysecretkey"; // keep same for all JWT
 
 /* MAIL SETUP */
-
 let transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
         user: 'jankisutariya14@gmail.com',
-        pass: 'xjwp aqym gwzb lsle'
+        pass: 'xjwp aqym gwzb lsle' // your Gmail App Password
     }
 });
 
-
 /* REGISTER */
-
 exports.Register = async (req, res) => {
-
     try {
-
-        const { email, password } = req.body;
+        let { name, email, password, phone, city, address } = req.body;
+        email = email.toLowerCase();
 
         const userExists = await UserModel.findOne({ email });
-
-        if (userExists) {
-            return res.json({
-                status: "User already exists"
-            });
-        }
+        if (userExists) return res.status(409).json({ status: "User already exists" });
 
         const hashedPassword = await bcrypt.hash(password, 10);
-
-        req.body.password = hashedPassword;
-
-        const data = await UserModel.create(req.body);
-
-        res.json({
-            status: "User Created Successfully",
-            data
-        });
-
+        const user = await UserModel.create({ name, email, password: hashedPassword, phone, city, address });
+        return res.status(201).json({ status: "User Created Successfully", data: user });
     } catch (error) {
-
-        res.status(500).json({
-            status: "Registration Error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "Registration Error", error: error.message });
     }
-
 };
 
-
-
-/* LOGIN */
-
+/* LOGIN – Send OTP */
 exports.Login = async (req, res) => {
-
     try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ status: "Email and password required" });
 
-        // Already logged in check
-        if (req.session.user && req.session.user.isLoggedIn) {
+        const user = await UserModel.findOne({ email: email.toLowerCase() });
+        if (!user) return res.status(404).json({ status: "User not registered" });
 
-            return res.json({
-                status: "User already logged in, please logout first",
-                UserId: req.session.user.id
-            });
-
-        }
-
-        const user = await UserModel.findOne({ email: req.body.email });
-
-        if (!user) {
-
-            return res.json({
-                status: "User not registered"
-            });
-
-        }
-
-        const match = await bcrypt.compare(req.body.password, user.password);
-
-        if (!match) {
-
-            return res.json({
-                status: "Invalid email or password"
-            });
-
-        }
+        const match = await bcrypt.compare(password, user.password);
+        if (!match) return res.status(401).json({ status: "Invalid email or password" });
 
         const otp = Math.floor(100000 + Math.random() * 900000);
+        const otpToken = jwt.sign({ id: user._id, email: user.email, otp }, JWT_SECRET, { expiresIn: "5m" });
 
-        // store OTP in session
-        req.session.otpData = {
-            id: user._id,
-            email: user.email,
-            otp: otp
-        };
-
-        let mailOptions = {
+        const mailOptions = {
             from: 'jankisutariya14@gmail.com',
             to: user.email,
             subject: 'Login OTP',
-            text: 'Your Login OTP is ' + otp
+            text: `Your Login OTP is ${otp}`
         };
 
-        transporter.sendMail(mailOptions, function (error) {
-
+        transporter.sendMail(mailOptions, (error) => {
             if (error) {
-
-                return res.json({
-                    status: "Error sending OTP"
-                });
-
+                console.log("Mail Error:", error);
+                return res.status(500).json({ status: "Error sending OTP", error: error.message });
             }
-
-            res.json({
-                status: "Login Success. OTP sent to your email"
-            });
-
+            console.log("OTP sent:", otp); // log OTP for testing
+            return res.status(200).json({ status: "OTP sent", otpToken });
         });
 
     } catch (error) {
-
-        res.status(500).json({
-            status: "Login error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "Login error", error: error.message });
     }
-
 };
 
-
-
-/* VERIFY OTP */
-
+/* VERIFY LOGIN OTP */
 exports.VerifyOTP = async (req, res) => {
-
     try {
+        const { otp, otpToken } = req.body;
+        if (!otpToken) return res.status(400).json({ status: "OTP session expired" });
 
-        if (!req.session.otpData) {
-
-            return res.json({
-                status: "Session expired. Please login again"
-            });
-
+        let decoded;
+        try {
+            decoded = jwt.verify(otpToken, JWT_SECRET);
+        } catch (err) {
+            return res.status(400).json({ status: "Invalid or expired OTP session" });
         }
 
-        if (parseInt(req.body.otp) === req.session.otpData.otp) {
-
-            req.session.user = {
-                id: req.session.otpData.id,
-                email: req.session.otpData.email,
-                isLoggedIn: true
-            };
-
-            return res.json({
-                status: "OTP verified successfully",
-                UserId: req.session.user.id
-            });
-
+        if (String(otp) !== String(decoded.otp)) {
+            return res.status(400).json({ status: "Invalid OTP" });
         }
 
-        res.json({
-            status: "Invalid OTP"
-        });
+        const user = await UserModel.findById(decoded.id).select("-password");
+        if (!user) return res.status(404).json({ status: "User not found" });
 
+        const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: "1d" });
+        return res.status(200).json({ status: "OTP verified successfully", token, user });
     } catch (error) {
-
-        res.status(500).json({
-            status: "OTP verification error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "OTP verification error", error: error.message });
     }
-
 };
 
+/* RESEND LOGIN OTP */
 
-
-/* FORGOT PASSWORD */
-
-exports.ForgetPassword = async (req, res) => {
-
+exports.ResendOTP = async (req, res) => {
     try {
-
-        const user = await UserModel.findOne({ email: req.body.email });
-
-        if (!user) {
-
-            return res.json({
-                status: "User not registered"
-            });
-
-        }
+        const { email } = req.body;
+        const user = await UserModel.findOne({ email: email.toLowerCase() });
+        if (!user) return res.status(404).json({ status: "User not registered" });
 
         const otp = Math.floor(100000 + Math.random() * 900000);
+        const otpToken = jwt.sign({ id: user._id, email: user.email, otp }, JWT_SECRET, { expiresIn: "5m" });
 
-        req.session.forget = {
-            email: user.email,
-            otp: otp
-        };
-
-        let mailOptions = {
+        const mailOptions = {
             from: 'jankisutariya14@gmail.com',
             to: user.email,
-            subject: 'Forgot Password OTP',
-            text: 'Your OTP is ' + otp
+            subject: 'Resent Login OTP',
+            text: `Your new OTP is ${otp}`
         };
 
-        transporter.sendMail(mailOptions, function (error) {
-
+        transporter.sendMail(mailOptions, (error) => {
             if (error) {
-
-                return res.json({
-                    status: "Error sending OTP"
-                });
-
+                console.log("Mail Error:", error);
+                return res.status(500).json({ status: "Error resending OTP", error: error.message });
             }
-
-            res.json({
-                status: "OTP sent to your email"
-            });
-
+            console.log("Resent OTP:", otp);
+            return res.status(200).json({ status: "New OTP sent", otpToken });
         });
-
     } catch (error) {
-
-        res.status(500).json({
-            status: "Error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "Resend OTP error", error: error.message });
     }
-
 };
 
-
-
-/* VERIFY FORGOT OTP */
-
-exports.VerifyForgetOTP = async (req, res) => {
-
+/* FORGOT PASSWORD – Send OTP */
+exports.ForgetPassword = async (req, res) => {
     try {
+        const { email } = req.body;
+        const user = await UserModel.findOne({ email: email.toLowerCase() });
+        if (!user) return res.status(404).json({ status: "User not registered" });
 
-        if (!req.session.forget) {
+        const otp = Math.floor(100000 + Math.random() * 900000);
+        const forgetToken = jwt.sign({ id: user._id, email: user.email, otp }, JWT_SECRET, { expiresIn: "5m" });
 
-            return res.json({
-                status: "OTP not generated"
-            });
+        const mailOptions = {
+            from: 'jankisutariya14@gmail.com',
+            to: user.email,
+            subject: 'Password Reset OTP',
+            text: `Your password reset OTP is ${otp}`
+        };
 
-        }
-
-        if (parseInt(req.body.otp) === req.session.forget.otp) {
-
-            req.session.forget.verified = true;
-
-            return res.json({
-                status: "OTP verified successfully"
-            });
-
-        }
-
-        res.json({
-            status: "Invalid OTP"
+        transporter.sendMail(mailOptions, (error) => {
+            if (error) {
+                console.log("Mail Error:", error);
+                return res.status(500).json({ status: "Error sending OTP", error: error.message });
+            }
+            console.log("Forgot OTP sent:", otp);
+            return res.status(200).json({ status: "Forget OTP sent", forgetToken });
         });
-
     } catch (error) {
-
-        res.status(500).json({
-            status: "OTP verification error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "Forget password error", error: error.message });
     }
-
 };
 
+/* VERIFY FORGOT PASSWORD OTP */
+exports.VerifyForgetOTP = async (req, res) => {
+    try {
+        const { otp, forgetToken } = req.body;
+        if (!forgetToken) return res.status(400).json({ status: "OTP session expired" });
 
+        let decoded;
+        try {
+            decoded = jwt.verify(forgetToken, JWT_SECRET);
+        } catch (err) {
+            return res.status(400).json({ status: "Invalid or expired OTP session" });
+        }
+
+        if (String(otp) !== String(decoded.otp)) {
+            return res.status(400).json({ status: "Invalid OTP" });
+        }
+
+        return res.status(200).json({ status: "OTP verified successfully", verifiedToken: forgetToken });
+    } catch (error) {
+        return res.status(500).json({ status: "Forget OTP verification error", error: error.message });
+    }
+};
 
 /* RESET PASSWORD */
-
 exports.Resetpassword = async (req, res) => {
-
     try {
+        const { newPassword, verifiedToken } = req.body;
+        if (!verifiedToken) return res.status(400).json({ status: "Token missing or expired" });
 
-        if (!req.session.forget || !req.session.forget.verified) {
-
-            return res.json({
-                status: "OTP not verified"
-            });
-
+        let decoded;
+        try {
+            decoded = jwt.verify(verifiedToken, JWT_SECRET);
+        } catch (err) {
+            return res.status(400).json({ status: "Invalid or expired session" });
         }
 
-        if (req.body.password !== req.body.cpassword) {
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await UserModel.findByIdAndUpdate(decoded.id, { password: hashedPassword });
 
-            return res.json({
-                status: "Password mismatch"
-            });
-
-        }
-
-        const hashedPassword = await bcrypt.hash(req.body.password, 10);
-
-        await UserModel.updateOne(
-            { email: req.session.forget.email },
-            { password: hashedPassword }
-        );
-
-        req.session.forget = null;
-
-        res.json({
-            status: "Password reset successfully"
-        });
-
+        return res.status(200).json({ status: "Password reset successfully" });
     } catch (error) {
-
-        res.status(500).json({
-            status: "Error",
-            error: error.message
-        });
-
+        return res.status(500).json({ status: "Reset password error", error: error.message });
     }
-
 };
 
-
-
 /* LOGOUT */
+exports.Logout = async (req, res) => {
+    try {
+        return res.status(200).json({ status: "Logout successful" });
+    } catch (error) {
+        return res.status(500).json({ status: "Logout error", error: error.message });
+    }
+};
 
-exports.Logout = (req, res) => {
+/* GET PROFILE */
+exports.getProfile = async (req, res) => {
+    try {
+        const token = req.headers.authorization;
+        if (!token) return res.status(401).json({ status: "Unauthorized" });
 
-    req.session.destroy();
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await UserModel.findById(decoded.id).select("-password");
+        if (!user) return res.status(404).json({ status: "User not found" });
 
-    res.json({
-        status: "Logout Success"
-    });
-
+        return res.status(200).json({ status: "Profile fetched", user });
+    } catch (error) {
+        return res.status(500).json({ status: "Profile fetch error", error: error.message });
+    }
 };

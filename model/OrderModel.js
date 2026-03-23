@@ -21,6 +21,17 @@ const OrderModel = new mongoose.Schema({
         type:Number,
         required:true
     },
+    shippingDetails: {
+        name: String,
+        email: String,
+        phone: String,
+        address: String,
+        city: String
+    },
+    paymentMethod: {
+        type: String,
+        default: "COD"
+    },
     status:{
         type:String,
         default:"pending"

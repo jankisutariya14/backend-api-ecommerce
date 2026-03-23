@@ -7,15 +7,10 @@ const JWT_SECRET = "mysecretkey"; // keep same for all JWT
 
 /* MAIL SETUP */
 let transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false, // IMPORTANT
+    service: 'gmail',
     auth: {
         user: 'jankisutariya14@gmail.com',
-        pass: 'xjwp aqym gwzb lsle'
-    },
-    tls: {
-        rejectUnauthorized: false
+        pass: 'xjwp aqym gwzb lsle' // your Gmail App Password
     }
 });
 
